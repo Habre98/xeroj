@@ -4,15 +4,16 @@ from wallets import get_wallet_balance
 import logging
 import math 
 import base64 
-from jupiter_client import get_jupiter_quote, get_jupiter_swap_transaction, SOL_MINT_ADDRESS
+# from jupiter_client import get_jupiter_quote, get_jupiter_swap_transaction, SOL_MINT_ADDRESS # Removed
+from jupiter_python_sdk.jupiter import Jupiter 
+from solders.pubkey import Pubkey 
 
 # Solana specific imports for transaction handling
 from solders.keypair import Keypair as SoldersKeypair 
-from solders.pubkey import Pubkey
 from solders.transaction import VersionedTransaction
 from solders.signature import Signature 
 from solana.rpc.async_api import AsyncClient
-from solana.rpc.types import TxOpts, Commitment # Removed TxSig
+from solana.rpc.types import TxOpts, Commitment 
 from solana.rpc.core import RPCException 
 from solana.exceptions import SolanaRpcException 
 
@@ -24,6 +25,8 @@ import time
 
 T = TypeVar('T') 
 
+# Define SOL_MINT_ADDRESS locally
+SOL_MINT_ADDRESS = "So11111111111111111111111111111111111111112"
 
 logger = logging.getLogger(__name__)
 
@@ -177,7 +180,7 @@ async def custom_confirm_transaction(
         
         await asyncio.sleep(polling_interval_secs)
 
-# --- Main Sell Flow Handlers (rest of the file remains the same) ---
+# --- Main Sell Flow Handlers ---
 async def sell_tokens_entry_point_handler(update, context):
     clear_sell_session_data(context) 
     query = update.callback_query
@@ -474,7 +477,7 @@ async def confirm_and_execute_sell(update, context, from_query: bool):
 
 async def handle_sell_execute_final_confirm(update, context):
     query = update.callback_query
-    await query.answer("Processing your order...") # More generic initial answer
+    await query.answer("Processing your order...") 
 
     user_id = str(query.from_user.id)
     user_pubkey_str = context.user_data.get('sell_selected_wallet_pubkey')
@@ -487,11 +490,32 @@ async def handle_sell_execute_final_confirm(update, context):
     final_ui_amount_sol_target = context.user_data.get('sell_final_sol_target_amount')
     slippage_percentage = context.chat_data.get('slippage_percentage', 0.5)
     slippage_bps = int(slippage_percentage * 100)
-
+    
     # RPC endpoint - use the one from bot_data
     rpc_url_to_use = context.bot_data.get('solana_rpc_url', "https://api.mainnet-beta.solana.com")
     logger.info(f"Using RPC URL for swap: {rpc_url_to_use}")
     async_client = AsyncClient(rpc_url_to_use)
+    
+    # Initialize Jupiter SDK client
+    signer_keypair: Optional[SoldersKeypair] = None
+    try:
+        user_wallets = load_wallets(user_id)
+        if not user_wallets or not (0 <= wallet_index < len(user_wallets)):
+            raise ValueError("Selected wallet not found or invalid index for SDK.")
+        signer_keypair = user_wallets[wallet_index]
+        
+        logger.info("Initializing Jupiter SDK client...")
+        jupiter_sdk_client = Jupiter(
+            async_client=async_client, 
+            keypair=signer_keypair,    
+        )
+        logger.info("Jupiter SDK client initialized.")
+    except Exception as sdk_init_err:
+        logger.error(f"Failed to initialize Jupiter SDK or load keypair: {sdk_init_err}", exc_info=True)
+        await query.edit_message_text(text=f"❌ Error: Failed to initialize. Details: {str(sdk_init_err)[:200]}...", reply_markup=get_sell_navigation_buttons())
+        await async_client.close() # Close client if SDK init fails
+        clear_sell_session_data(context)
+        return
 
     try:
         critical_data_check = {
@@ -504,100 +528,112 @@ async def handle_sell_execute_final_confirm(update, context):
             err_msg = f"Error: Missing critical data ({', '.join(missing_data)}). Please restart."
             logger.error(f"handle_sell_execute_final_confirm: {err_msg}")
             await query.edit_message_text(err_msg, reply_markup=get_sell_navigation_buttons())
-            return # clear_sell_session_data is called in finally
+            return 
 
-        jupiter_input_mint: str
-        jupiter_output_mint: str
+        jupiter_input_mint_str: str
+        jupiter_output_mint_str: str
         jupiter_amount_atomic: int
-        jupiter_swap_mode: str
+        jupiter_swap_mode: str # "ExactIn" or "ExactOut"
 
         if sell_type == 'tokens':
             if final_ui_amount_tokens is None: raise ValueError("Sell amount for tokens is missing.")
-            jupiter_input_mint = input_token_mint_str
-            jupiter_output_mint = SOL_MINT_ADDRESS
+            jupiter_input_mint_str = input_token_mint_str
+            jupiter_output_mint_str = SOL_MINT_ADDRESS # Selling token for SOL
             jupiter_amount_atomic = int(final_ui_amount_tokens * (10**input_token_decimals))
             jupiter_swap_mode = "ExactIn"
         elif sell_type == 'sol_target':
             if final_ui_amount_sol_target is None: raise ValueError("SOL target amount is missing.")
-            jupiter_input_mint = input_token_mint_str
-            jupiter_output_mint = SOL_MINT_ADDRESS
-            sol_decimals = 9
+            jupiter_input_mint_str = input_token_mint_str 
+            jupiter_output_mint_str = SOL_MINT_ADDRESS 
+            sol_decimals = 9 
             jupiter_amount_atomic = int(final_ui_amount_sol_target * (10**sol_decimals))
             jupiter_swap_mode = "ExactOut"
         else:
             raise ValueError("Unknown sell type.")
 
-        await query.edit_message_text(text=f"🔄 Getting best quote for your {input_token_symbol} swap...", reply_markup=None)
-        quote_response = await get_jupiter_quote(
-            input_mint=jupiter_input_mint, output_mint=jupiter_output_mint,
-            amount=jupiter_amount_atomic, slippage_bps=slippage_bps, swap_mode=jupiter_swap_mode
-        )
-        if not quote_response:
-            raise Exception("Failed to get swap quote from Jupiter.")
-
-        await query.edit_message_text(text=f"🔄 Building transaction for {input_token_symbol}...", reply_markup=None)
-        swap_api_response = await get_jupiter_swap_transaction(
-            quote_response=quote_response, user_public_key=user_pubkey_str
-        )
-        if not swap_api_response:
-            raise Exception("Failed to build swap transaction with Jupiter.")
-
-        swap_transaction_b64 = swap_api_response.get('swapTransaction')
-        last_valid_block_height = swap_api_response.get('lastValidBlockHeight')
-        if not swap_transaction_b64:
-            raise Exception("Invalid swap response from Jupiter: Transaction data missing.")
-
-        user_wallets = load_wallets(user_id)
-        if not user_wallets or wallet_index >= len(user_wallets):
-            raise Exception("Selected wallet not found or invalid index.")
+        await query.edit_message_text(text=f"🔄 Getting swap transaction from Jupiter SDK for {input_token_symbol}...", reply_markup=None)
         
-        signer_keypair: SoldersKeypair = user_wallets[wallet_index] # Already SoldersKeypair from helper_func
+        # Define priority fee settings (example, can be made configurable)
+        compute_unit_price_micro_lamports = 500000 # Default: 0.0001 SOL per 1M CU
+        # The SDK might have its own way to set priority fees, e.g. on Jupiter object or in swap call
+        
+        transaction_data = await jupiter_sdk_client.swap(
+            input_mint=jupiter_input_mint_str,  
+            output_mint=jupiter_output_mint_str,
+            amount=jupiter_amount_atomic,
+            slippage_bps=slippage_bps,
+            swap_mode=jupiter_swap_mode, 
+        )
+
+        if not transaction_data: 
+            raise Exception("Jupiter SDK returned no transaction data.")
+        
+
+        swap_transaction_b64: str
+        last_valid_block_height: int
+
+        if isinstance(transaction_data, str): # SDK returns just the base64 string
+            swap_transaction_b64 = transaction_data
+            logger.warning("Jupiter SDK returned only base64 tx string. Fetching new LVBH.")
+            blockhash_details_resp = await async_client.get_latest_blockhash(commitment=Commitment("confirmed"))
+            if not blockhash_details_resp or not blockhash_details_resp.value:
+                raise Exception("Failed to fetch fresh blockhash details for LVBH for SDK tx.")
+            last_valid_block_height = blockhash_details_resp.value.last_valid_block_height
+        elif isinstance(transaction_data, dict): # SDK returns a dict with more info
+            swap_transaction_b64 = transaction_data.get("swapTransaction") # Key might vary
+            last_valid_block_height = transaction_data.get("lastValidBlockHeight") # Key might vary
+            if not swap_transaction_b64 or last_valid_block_height is None:
+                raise ValueError("Jupiter SDK response dict missing swapTransaction or lastValidBlockHeight.")
+        else:
+            raise ValueError(f"Unexpected response type from Jupiter SDK: {type(transaction_data)}")
+
+        # Store for potential later use if needed, though signing happens immediately
+        context.user_data['jupiter_swap_tx_b64'] = swap_transaction_b64
+        context.user_data['jupiter_last_valid_block_height'] = last_valid_block_height
+        
+        # The SDK should have signed the transaction internally if keypair was provided at init.
+        # If not, the signing logic used before (populate) would be needed here with the tx from SDK.
+        # The SDK's swap method typically returns an ALREADY SIGNED, serialized transaction if a keypair is involved.
+        # If it returns a non-signed tx, then the manual signing is still needed.
+        # The example `base64.b64decode(transaction_data)` implies it's ready for send_raw_transaction.
+        # Let's assume `transaction_data` (or `swap_transaction_b64`) is the *signed and serialized* transaction in base64.
+        # If it's only serialized (not signed), then we need to deserialize, sign, and re-serialize.
+        # The provided SDK example `tx_bytes = base64.b64decode(transaction_data)` then `VersionedTransaction.from_bytes(tx_bytes)`
+        # then `signed_tx = versioned_tx.sign([keypair])` implies it's NOT signed by the SDK by default.
+        # This means our existing signing logic is still mostly valid.
 
         tx_bytes = base64.b64decode(swap_transaction_b64)
         versioned_tx = VersionedTransaction.from_bytes(tx_bytes)
         
-        # Get the message from the transaction
         message = versioned_tx.message 
-        
-        # Sign the message bytes using the signer's keypair
-        # signer_keypair is already loaded as a SoldersKeypair
-        # sign_message returns a solders.signature.Signature object
         signature_from_user = signer_keypair.sign_message(bytes(message)) 
-        
-        # Create the signed transaction using populate.
         signed_tx = VersionedTransaction.populate(message, [signature_from_user])
         
         await query.edit_message_text(text=f"🚀 Sending transaction for {input_token_symbol} swap...", reply_markup=None)
-        serialized_signed_tx = bytes(signed_tx) # Corrected serialization
+        serialized_signed_tx = bytes(signed_tx)
         opts = TxOpts(skip_preflight=True, preflight_commitment=Commitment("confirmed"))
         
         signature_response = await async_client.send_raw_transaction(serialized_signed_tx, opts=opts)
-        # Assuming SendTransactionResp is an RpcResponse, the actual signature is in .value
-        # The type of .value should be solders.signature.Signature
         actual_tx_signature = signature_response.value 
         
-        logger.info(f"Transaction sent with signature: {actual_tx_signature}") # Log the actual signature
-        await query.edit_message_text(text=f"🔗 Transaction sent! Waiting for confirmation for {input_token_symbol} swap...\nSignature: `{str(actual_tx_signature)}`", reply_markup=None, parse_mode="Markdown") # Display the string of the actual signature
+        logger.info(f"Transaction sent with signature: {actual_tx_signature}") 
+        await query.edit_message_text(text=f"🔗 Transaction sent! Waiting for confirmation for {input_token_symbol} swap...\nSignature: `{str(actual_tx_signature)}`", reply_markup=None, parse_mode="Markdown")
 
-        # Use custom_confirm_transaction
         desired_commitment_level = Commitment("confirmed")
-        max_polling_duration = 90 # seconds
+        max_polling_duration = 90 
         
         confirmation_result = await custom_confirm_transaction(
             async_client=async_client,
             signature=actual_tx_signature,
             desired_commitment=desired_commitment_level,
-            last_valid_block_height=last_valid_block_height,
-            logger_instance=logger, # Pass the module-level logger
+            last_valid_block_height=last_valid_block_height, # Use the LVBH associated with the SDK's tx or freshly fetched one
+            logger_instance=logger, 
             polling_interval_secs=3,
             max_polling_duration_secs=max_polling_duration
         )
 
         final_message_text = ""
-        # success = False # Not strictly needed if we directly edit message
-
         if confirmation_result["status"] == "success":
-            # success = True
             final_message_text = (
                 f"✅ Swap successful for {input_token_symbol}!\n"
                 f"Signature: `{str(actual_tx_signature)}`\n"
@@ -605,95 +641,66 @@ async def handle_sell_execute_final_confirm(update, context):
             )
         elif confirmation_result["status"] == "failed_on_chain":
             on_chain_error = confirmation_result.get("error", "Unknown on-chain error")
-            error_detail = str(on_chain_error)
-            max_len = 250
-            if len(error_detail) > max_len:
-                error_detail = error_detail[:max_len] + "..."
+            error_detail = str(on_chain_error); max_len=250
+            if len(error_detail) > max_len: error_detail = error_detail[:max_len] + "..."
             final_message_text = (
                 f"❌ Transaction failed on-chain for {input_token_symbol}.\n"
-                f"Error: {error_detail}\n"
-                f"Signature: `{str(actual_tx_signature)}`"
+                f"Error: {error_detail}\nSignature: `{str(actual_tx_signature)}`"
             )
         elif confirmation_result["status"] == "expired":
             final_message_text = (
                 f"⌛ Transaction expired for {input_token_symbol}.\n"
-                f"Not confirmed before LVBH {last_valid_block_height}.\n"
-                f"Signature: `{str(actual_tx_signature)}`"
+                f"Not confirmed before LVBH {last_valid_block_height}.\nSignature: `{str(actual_tx_signature)}`"
             )
         elif confirmation_result["status"] == "timeout":
             final_message_text = (
                 f"⌛ Confirmation timed out for {input_token_symbol} after {max_polling_duration}s.\n"
-                f"Please check status manually on Solscan.\n"
-                f"Signature: `{str(actual_tx_signature)}`"
+                f"Please check status manually on Solscan.\nSignature: `{str(actual_tx_signature)}`"
             )
         elif confirmation_result["status"] == "rpc_error":
-            rpc_error_detail = confirmation_result.get("error", "Unknown RPC error")
-            max_len_rpc = 250
-            if len(rpc_error_detail) > max_len_rpc:
-                rpc_error_detail = rpc_error_detail[:max_len_rpc] + "..."
+            rpc_error_detail = confirmation_result.get("error", "Unknown RPC error"); max_len_rpc=250
+            if len(rpc_error_detail) > max_len_rpc: rpc_error_detail = rpc_error_detail[:max_len_rpc] + "..."
             final_message_text = (
                 f"❌ RPC error during confirmation for {input_token_symbol}.\n"
                 f"Error: {rpc_error_detail}\n"
-                f"Please check status manually on Solscan.\n"
-                f"Signature: `{str(actual_tx_signature)}`"
+                f"Please check status manually on Solscan.\nSignature: `{str(actual_tx_signature)}`"
             )
-        else: # Should not happen
-            unknown_error_detail = str(confirmation_result.get("error", "Unknown state"))
-            max_len_unknown = 250
-            if len(unknown_error_detail) > max_len_unknown:
-                unknown_error_detail = unknown_error_detail[:max_len_unknown] + "..."
+        else: 
+            unknown_error_detail = str(confirmation_result.get("error", "Unknown state")); max_len_unknown=250
+            if len(unknown_error_detail) > max_len_unknown: unknown_error_detail = unknown_error_detail[:max_len_unknown] + "..."
             final_message_text = (
                 f"❓ Unknown confirmation status for {input_token_symbol}: {unknown_error_detail}\n"
-                f"Please check status manually on Solscan.\n"
-                f"Signature: `{str(actual_tx_signature)}`"
+                f"Please check status manually on Solscan.\nSignature: `{str(actual_tx_signature)}`"
             )
         
         try:
             await query.edit_message_text(
-                text=final_message_text, 
-                parse_mode="Markdown", 
-                reply_markup=get_sell_navigation_buttons(),
-                disable_web_page_preview=True
+                text=final_message_text, parse_mode="Markdown", 
+                reply_markup=get_sell_navigation_buttons(), disable_web_page_preview=True
             )
         except Exception as edit_err:
             logger.error(f"Error editing message for final confirmation status: {edit_err}")
-            if update.effective_chat: # Check if effective_chat exists
+            if update.effective_chat:
                 await context.bot.send_message(
-                    chat_id=update.effective_chat.id, # Use effective_chat.id
-                    text=final_message_text,
-                    parse_mode="Markdown",
-                    reply_markup=get_sell_navigation_buttons(),
+                    chat_id=update.effective_chat.id, text=final_message_text,
+                    parse_mode="Markdown", reply_markup=get_sell_navigation_buttons(),
                     disable_web_page_preview=True
                 )
-            else: # Fallback if no effective_chat on update (very unlikely for query)
+            else: 
                  logger.error("No effective_chat to send final confirmation message to.")
-
-
     except Exception as e:
-        logger.error(f"handle_sell_execute_final_confirm error: {e}", exc_info=True) # Keep full log
-
+        logger.error(f"handle_sell_execute_final_confirm error: {e}", exc_info=True) 
         error_detail_to_show = ""
         if hasattr(e, '__cause__') and e.__cause__ is not None:
-            # Prioritize the cause if it exists, as it's often more specific
             error_detail_to_show = str(e.__cause__)
-        
-        if not error_detail_to_show: # If no cause, or cause stringified to empty
-            error_detail_to_show = str(e) # Fall back to the main exception string
-
-        if not error_detail_to_show: # If both are empty for some reason
-            error_detail_to_show = "An unspecified error occurred. Please check bot logs."
-
-        # Truncate for Telegram message
+        if not error_detail_to_show: error_detail_to_show = str(e)
+        if not error_detail_to_show: error_detail_to_show = "An unspecified error occurred. Please check bot logs."
         max_len = 300 
-        if len(error_detail_to_show) > max_len:
-            error_detail_to_show = error_detail_to_show[:max_len] + "..."
-        
+        if len(error_detail_to_show) > max_len: error_detail_to_show = error_detail_to_show[:max_len] + "..."
         user_facing_error_text = f"❌ Swap failed.\nError: {error_detail_to_show}"
-        
-        # Ensure query object is valid before trying to edit
         if query and query.message:
              await query.edit_message_text(text=user_facing_error_text, reply_markup=get_sell_navigation_buttons())
-        elif update.effective_chat: # Fallback if query edit fails
+        elif update.effective_chat: 
             await context.bot.send_message(chat_id=update.effective_chat.id, text=user_facing_error_text, reply_markup=get_sell_navigation_buttons())
     finally:
         await async_client.close()
@@ -734,3 +741,4 @@ async def sell_button_callback(update, context):
             await query.answer("Action not recognized.")
         except Exception as e:
             logger.debug(f"Query answer failed in sell_button_callback fallback: {e}")
+
