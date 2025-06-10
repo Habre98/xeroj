@@ -8,7 +8,7 @@ async def fetch_token_info(contract_address: str):
     Obtiene información de token desde Dexscreener con la estructura esperada por el bot
     """
     try:
-        # Paso 1: Buscar el par por contract address
+        # 1: Buscar el par por contract address
         search_url = f"https://api.dexscreener.com/latest/dex/search?q={contract_address}"
         async with httpx.AsyncClient(timeout=10.0) as client:
             search_response = await client.get(search_url)
@@ -19,7 +19,7 @@ async def fetch_token_info(contract_address: str):
             print(f"⚠️ No se encontraron pares para {contract_address}")
             return None
 
-        # Paso 2: Filtrar solo pares de Solana y encontrar el mejor
+        # 2: Filtrar solo pares de Solana y encontrar el mejor
         solana_pairs = [p for p in pairs if p.get("chainId") == "solana"]
         if not solana_pairs:
             print(f"⚠️ No se encontraron pares de Solana para {contract_address}")
@@ -33,7 +33,7 @@ async def fetch_token_info(contract_address: str):
             print(f"⚠️ No se encontró pairAddress para {contract_address}")
             return None
 
-        # Paso 3: Obtener datos detallados del par
+        # 3: Obtener datos detallados del par
         pair_url = f"https://api.dexscreener.com/latest/dex/pairs/solana/{pair_id}"
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(pair_url)
@@ -47,7 +47,7 @@ async def fetch_token_info(contract_address: str):
         # Debug para revisar estructura real
         print("🔍 DEBUG pair_data keys:", list(pair_data.keys()))
         
-        # Paso 4: Extraer información base del token
+        # 4: Extraer información base del token
         base_token = pair_data.get("baseToken", {})
         quote_token = pair_data.get("quoteToken", {})
         
@@ -84,7 +84,7 @@ async def fetch_token_info(contract_address: str):
         # URL de Dexscreener
         dex_url = pair_data.get("url") or f"https://dexscreener.com/solana/{contract_address}"
 
-        # Paso 5: Procesar información adicional y redes sociales
+        # 5: Procesar información adicional y redes sociales
         info = pair_data.get("info", {})
         
         # Websites

@@ -6,11 +6,8 @@ logger = logging.getLogger(__name__)
 
 
 async def get_token_symbol_from_api(mint_address):
-    """
-    Obtiene el símbolo del token usando APIs externas
-    """
     try:
-        # Opción 1: Jupiter API
+        # 1: Jupiter API
         async with aiohttp.ClientSession() as session:
             url = f"https://token.jup.ag/strict"
             async with session.get(url) as response:
@@ -20,7 +17,7 @@ async def get_token_symbol_from_api(mint_address):
                         if token.get('address') == mint_address:
                             return token.get('symbol')
         
-        # Opción 2: Solana Token List
+        # 2: Solana Token List
         async with aiohttp.ClientSession() as session:
             url = "https://raw.githubusercontent.com/solana-labs/token-list/main/src/tokens/solana.tokenlist.json"
             async with session.get(url) as response:

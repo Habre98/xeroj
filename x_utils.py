@@ -44,7 +44,7 @@ async def fetch_bot_x_id(context):
 
 async def start_mention_watcher(context):
     bot = context.bot
-    bot_x_id = context.bot_data.get("XeroAi_sol_id")
+    bot_x_id = context.bot_data.get("XeroAi_sol_user_id") # Changed key
     twitter_client = context.bot_data.get("twitter_client")
 
     if not twitter_client:
@@ -52,7 +52,7 @@ async def start_mention_watcher(context):
         return
 
     if not bot_x_id:
-        print("❌ No se encontró xeroAi_bot_user_id en context.bot_data.")
+        print("❌ No se encontró XeroAi_sol_user_id en context.bot_data.") # Updated message
         return
 
     print("🚀 Iniciando watcher de menciones con comando de vinculación")

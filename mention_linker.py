@@ -872,8 +872,8 @@ class UnifiedMentionProcessor:
 
     async def fetch_mentions(self, last_seen_id: Optional[int] = None):
         """Fetch mentions from replies or tweets using search_recent_tweets"""
-        if "xeroAi_bot_user_id" not in self.context.bot_data:
-            print("❌ Bot X ID no configurado")
+        if "XeroAi_sol_user_id" not in self.context.bot_data: # Changed key
+            print("❌ Bot X ID ('XeroAi_sol_user_id') no configurado en context.bot_data.") # Updated message
             return None, last_seen_id
 
         if self.rate_limit_until and datetime.now() < self.rate_limit_until:
