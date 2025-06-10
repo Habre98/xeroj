@@ -722,13 +722,12 @@ async def handle_sell_text_input(update, context):
 
 
 async def confirm_and_execute_sell(update, context, from_query: bool):
-    # This function now only presents the confirmation before Jupiter calls
-    wallet_pubkey = context.user_data.get("sell_selected_wallet_pubkey")
-    token_symbol = context.user_data.get("sell_selected_token_symbol")
-    token_mint_str = context.user_data.get("sell_selected_token_mint")
-    final_amount_ui = context.user_data.get("sell_final_token_amount")
-    sol_target_ui = context.user_data.get("sell_final_sol_target_amount")
-    sell_type = context.user_data.get("sell_type")
+    wallet_pubkey = context.user_data.get('sell_selected_wallet_pubkey')
+    token_symbol = context.user_data.get('sell_selected_token_symbol')
+    token_mint_str = context.user_data.get('sell_selected_token_mint')
+    final_amount_ui = context.user_data.get('sell_final_token_amount')
+    sol_target_ui = context.user_data.get('sell_final_sol_target_amount')
+    sell_type = context.user_data.get('sell_type')
 
     if not all([wallet_pubkey, token_symbol, token_mint_str, sell_type]):
         # ... (error handling as before, using get_sell_navigation_buttons)
