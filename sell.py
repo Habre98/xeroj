@@ -4,9 +4,11 @@ from wallets import get_wallet_balance
 import logging
 import math 
 import base64 
-# from jupiter_client import get_jupiter_quote, get_jupiter_swap_transaction, SOL_MINT_ADDRESS # Removed
 from jupiter_python_sdk.jupiter import Jupiter 
 from solders.pubkey import Pubkey 
+from solders import compute_budget
+from solders.message import MessageV0
+from solders.instruction import Instruction, AccountMeta
 
 # Solana specific imports for transaction handling
 from solders.keypair import Keypair as SoldersKeypair 
@@ -144,7 +146,7 @@ async def custom_confirm_transaction(
         if status_response_wrapper is None or status_response_wrapper.value is None:
             logger_instance.warning(f"Failed to get signature status for {signature} after retries, or empty response. Continuing polling.")
         else:
-            status_info_list: Optional[List[Optional[Any]]] = status_response_wrapper.value # Changed TxSig to Any
+            status_info_list: Optional[List[Optional[Any]]] = status_response_wrapper.value 
             if not status_info_list or status_info_list[0] is None:
                 logger_instance.debug(f"Signature {signature} not yet found or status is null. Continuing polling.")
             else:
@@ -180,7 +182,6 @@ async def custom_confirm_transaction(
         
         await asyncio.sleep(polling_interval_secs)
 
-# --- Main Sell Flow Handlers ---
 async def sell_tokens_entry_point_handler(update, context):
     clear_sell_session_data(context) 
     query = update.callback_query
@@ -197,7 +198,6 @@ async def sell_tokens_entry_point_handler(update, context):
             await context.bot.send_message(chat_id=update.effective_chat.id, text="Sell process initiated. Fetching wallets...")
     await prompt_wallet_selection(update, context)
 
-
 async def prompt_wallet_selection(update, context):
     user_id = update.effective_user.id
     loaded_wallets = load_wallets(user_id)
@@ -212,7 +212,7 @@ async def prompt_wallet_selection(update, context):
         for index, wallet_kp in enumerate(loaded_wallets):
             pubkey = str(wallet_kp.pubkey())
             try:
-                balance_info = await get_wallet_balance(pubkey, rpc_url) # Pass rpc_url
+                balance_info = await get_wallet_balance(pubkey, rpc_url) 
                 sol_balance = balance_info.get("sol_balance", 0)
             except Exception as e:
                 logger.error(f"Error fetching balance for {pubkey} in prompt_wallet_selection: {e}")
@@ -234,7 +234,6 @@ async def prompt_wallet_selection(update, context):
     else:
          if update.effective_chat:
             await context.bot.send_message(chat_id=update.effective_chat.id, text=message_text, reply_markup=reply_markup, parse_mode="Markdown")
-
 
 async def handle_wallet_selection_for_sell(update, context):
     query = update.callback_query
@@ -260,7 +259,7 @@ async def handle_wallet_selection_for_sell(update, context):
     await query.edit_message_text(text=f"Fetching tokens for wallet `{pubkey[:4]}...{pubkey[-4:]}`...")
     try:
         rpc_url = context.bot_data.get('solana_rpc_url', "https://api.mainnet-beta.solana.com")
-        balance_info = await get_wallet_balance(pubkey, rpc_url) # Pass rpc_url
+        balance_info = await get_wallet_balance(pubkey, rpc_url) 
         tokens_on_wallet = balance_info.get("tokens", [])
     except Exception as e:
         logger.error(f"Error fetching balance for {pubkey} in handle_wallet_selection_for_sell: {e}")
@@ -288,7 +287,6 @@ async def handle_wallet_selection_for_sell(update, context):
     keyboard_buttons.append([InlineKeyboardButton("⬅ Back to Wallets", callback_data="sell_tokens_entry")])
     reply_markup = InlineKeyboardMarkup(keyboard_buttons)
     await query.edit_message_text(text=message_text, reply_markup=reply_markup, parse_mode="Markdown")
-
 
 async def handle_token_selection_for_sell(update, context):
     query = update.callback_query
@@ -329,7 +327,6 @@ async def handle_token_selection_for_sell(update, context):
     reply_markup = InlineKeyboardMarkup(keyboard_buttons)
     await query.edit_message_text(text=message_text, reply_markup=reply_markup, parse_mode="Markdown")
 
-
 async def handle_sell_amount_percent(update, context):
     query = update.callback_query
     await query.answer()
@@ -354,7 +351,6 @@ async def handle_sell_amount_percent(update, context):
     logger.info(f"User {query.from_user.id} selected {percentage}% of token, amount: {token_amount_to_sell}")
     await confirm_and_execute_sell(update, context, from_query=True)
 
-
 async def prompt_exact_token_amount(update, context):
     query = update.callback_query
     await query.answer()
@@ -370,7 +366,6 @@ async def prompt_exact_token_amount(update, context):
     context.user_data['awaiting_exact_token_input_for_sell'] = True
     context.user_data.pop('awaiting_exact_sol_input_for_sell', None)
 
-
 async def prompt_exact_sol_amount(update, context):
     query = update.callback_query
     await query.answer()
@@ -385,7 +380,6 @@ async def prompt_exact_sol_amount(update, context):
     await query.edit_message_text(text=message_text, reply_markup=reply_markup)
     context.user_data['awaiting_exact_sol_input_for_sell'] = True
     context.user_data.pop('awaiting_exact_token_input_for_sell', None)
-
 
 async def handle_sell_text_input(update, context):
     if not update.message or not update.message.text: return False
@@ -437,7 +431,6 @@ async def handle_sell_text_input(update, context):
             return True
     return False
 
-
 async def confirm_and_execute_sell(update, context, from_query: bool):
     # This function now only presents the confirmation before Jupiter calls
     wallet_pubkey = context.user_data.get('sell_selected_wallet_pubkey')
@@ -448,7 +441,6 @@ async def confirm_and_execute_sell(update, context, from_query: bool):
     sell_type = context.user_data.get('sell_type')
 
     if not all([wallet_pubkey, token_symbol, token_mint_str, sell_type]):
-        # ... (error handling as before, using get_sell_navigation_buttons)
         logger.error("confirm_and_execute_sell: Missing critical data.")
         text_to_send = "Error: Critical sell info missing. Please restart."
         if from_query and update.callback_query: await update.callback_query.edit_message_text(text_to_send, reply_markup=get_sell_navigation_buttons())
@@ -474,7 +466,6 @@ async def confirm_and_execute_sell(update, context, from_query: bool):
     elif update.effective_chat: 
         await context.bot.send_message(chat_id=update.effective_chat.id, text=text, reply_markup=reply_markup, parse_mode="Markdown")
 
-
 async def handle_sell_execute_final_confirm(update, context):
     query = update.callback_query
     await query.answer("Processing your order...") 
@@ -491,12 +482,10 @@ async def handle_sell_execute_final_confirm(update, context):
     slippage_percentage = context.chat_data.get('slippage_percentage', 0.5)
     slippage_bps = int(slippage_percentage * 100)
     
-    # RPC endpoint - use the one from bot_data
     rpc_url_to_use = context.bot_data.get('solana_rpc_url', "https://api.mainnet-beta.solana.com")
     logger.info(f"Using RPC URL for swap: {rpc_url_to_use}")
     async_client = AsyncClient(rpc_url_to_use)
     
-    # Initialize Jupiter SDK client
     signer_keypair: Optional[SoldersKeypair] = None
     try:
         user_wallets = load_wallets(user_id)
@@ -513,7 +502,7 @@ async def handle_sell_execute_final_confirm(update, context):
     except Exception as sdk_init_err:
         logger.error(f"Failed to initialize Jupiter SDK or load keypair: {sdk_init_err}", exc_info=True)
         await query.edit_message_text(text=f"❌ Error: Failed to initialize. Details: {str(sdk_init_err)[:200]}...", reply_markup=get_sell_navigation_buttons())
-        await async_client.close() # Close client if SDK init fails
+        await async_client.close() 
         clear_sell_session_data(context)
         return
 
@@ -533,12 +522,12 @@ async def handle_sell_execute_final_confirm(update, context):
         jupiter_input_mint_str: str
         jupiter_output_mint_str: str
         jupiter_amount_atomic: int
-        jupiter_swap_mode: str # "ExactIn" or "ExactOut"
+        jupiter_swap_mode: str 
 
         if sell_type == 'tokens':
             if final_ui_amount_tokens is None: raise ValueError("Sell amount for tokens is missing.")
             jupiter_input_mint_str = input_token_mint_str
-            jupiter_output_mint_str = SOL_MINT_ADDRESS # Selling token for SOL
+            jupiter_output_mint_str = SOL_MINT_ADDRESS 
             jupiter_amount_atomic = int(final_ui_amount_tokens * (10**input_token_decimals))
             jupiter_swap_mode = "ExactIn"
         elif sell_type == 'sol_target':
@@ -553,10 +542,6 @@ async def handle_sell_execute_final_confirm(update, context):
 
         await query.edit_message_text(text=f"🔄 Getting swap transaction from Jupiter SDK for {input_token_symbol}...", reply_markup=None)
         
-        # Define priority fee settings (example, can be made configurable)
-        compute_unit_price_micro_lamports = 500000 # Default: 0.0001 SOL per 1M CU
-        # The SDK might have its own way to set priority fees, e.g. on Jupiter object or in swap call
-        
         transaction_data = await jupiter_sdk_client.swap(
             input_mint=jupiter_input_mint_str,  
             output_mint=jupiter_output_mint_str,
@@ -568,47 +553,134 @@ async def handle_sell_execute_final_confirm(update, context):
         if not transaction_data: 
             raise Exception("Jupiter SDK returned no transaction data.")
         
-
         swap_transaction_b64: str
         last_valid_block_height: int
 
-        if isinstance(transaction_data, str): # SDK returns just the base64 string
+        if isinstance(transaction_data, str): 
             swap_transaction_b64 = transaction_data
             logger.warning("Jupiter SDK returned only base64 tx string. Fetching new LVBH.")
             blockhash_details_resp = await async_client.get_latest_blockhash(commitment=Commitment("confirmed"))
             if not blockhash_details_resp or not blockhash_details_resp.value:
                 raise Exception("Failed to fetch fresh blockhash details for LVBH for SDK tx.")
             last_valid_block_height = blockhash_details_resp.value.last_valid_block_height
-        elif isinstance(transaction_data, dict): # SDK returns a dict with more info
-            swap_transaction_b64 = transaction_data.get("swapTransaction") # Key might vary
-            last_valid_block_height = transaction_data.get("lastValidBlockHeight") # Key might vary
+        elif isinstance(transaction_data, dict): 
+            swap_transaction_b64 = transaction_data.get("swapTransaction") 
+            last_valid_block_height = transaction_data.get("lastValidBlockHeight") 
             if not swap_transaction_b64 or last_valid_block_height is None:
                 raise ValueError("Jupiter SDK response dict missing swapTransaction or lastValidBlockHeight.")
         else:
             raise ValueError(f"Unexpected response type from Jupiter SDK: {type(transaction_data)}")
 
-        # Store for potential later use if needed, though signing happens immediately
         context.user_data['jupiter_swap_tx_b64'] = swap_transaction_b64
         context.user_data['jupiter_last_valid_block_height'] = last_valid_block_height
         
-        # The SDK should have signed the transaction internally if keypair was provided at init.
-        # If not, the signing logic used before (populate) would be needed here with the tx from SDK.
-        # The SDK's swap method typically returns an ALREADY SIGNED, serialized transaction if a keypair is involved.
-        # If it returns a non-signed tx, then the manual signing is still needed.
-        # The example `base64.b64decode(transaction_data)` implies it's ready for send_raw_transaction.
-        # Let's assume `transaction_data` (or `swap_transaction_b64`) is the *signed and serialized* transaction in base64.
-        # If it's only serialized (not signed), then we need to deserialize, sign, and re-serialize.
-        # The provided SDK example `tx_bytes = base64.b64decode(transaction_data)` then `VersionedTransaction.from_bytes(tx_bytes)`
-        # then `signed_tx = versioned_tx.sign([keypair])` implies it's NOT signed by the SDK by default.
-        # This means our existing signing logic is still mostly valid.
-
         tx_bytes = base64.b64decode(swap_transaction_b64)
-        versioned_tx = VersionedTransaction.from_bytes(tx_bytes)
+        unsigned_jupiter_tx = VersionedTransaction.from_bytes(tx_bytes)
         
-        message = versioned_tx.message 
-        signature_from_user = signer_keypair.sign_message(bytes(message)) 
-        signed_tx = VersionedTransaction.populate(message, [signature_from_user])
-        
+        original_jupiter_message = unsigned_jupiter_tx.message
+        signed_tx: VersionedTransaction # Ensure signed_tx is defined for all paths
+
+        if isinstance(original_jupiter_message, MessageV0) and original_jupiter_message.address_table_lookups:
+            logger.warning(
+                f"Transaction for {input_token_symbol} uses Address Lookup Tables (ALTs). "
+                "Manual priority fee addition for ALTs is currently not fully supported with solders 0.26.0 due to deserialization complexities. "
+                "Sending the original Jupiter transaction."
+            )
+            # Sign and use the original Jupiter transaction without modification
+            message_to_sign_bytes = bytes(original_jupiter_message)
+            signature_from_user = signer_keypair.sign_message(message_to_sign_bytes)
+            signed_tx = VersionedTransaction.populate(original_jupiter_message, [signature_from_user])
+        elif not isinstance(original_jupiter_message, MessageV0):
+            logger.warning(f"Original message is not MessageV0 (type: {type(original_jupiter_message)}). Signing original message without manual fees.")
+            message_to_sign_bytes = bytes(original_jupiter_message)
+            signature_from_user = signer_keypair.sign_message(message_to_sign_bytes)
+            signed_tx = VersionedTransaction.populate(original_jupiter_message, [signature_from_user])
+        else:
+            # NON-ALT Path: Proceed with manual fee addition logic for static keys
+            logger.info(f"Transaction for {input_token_symbol} does not appear to use ALTs. Proceeding with manual fee addition.")
+            
+            priority_fee_lamports = context.bot_data.get('priority_fee_lamports', 1000000)
+            compute_unit_limit_val = context.bot_data.get('compute_unit_limit', 800000)
+            logger.info(f"Attempting to add manual priority fee: {priority_fee_lamports} lamports, CU limit: {compute_unit_limit_val}")
+
+            ix_set_compute_limit = compute_budget.set_compute_unit_limit(compute_unit_limit_val)
+            ix_set_compute_price = compute_budget.set_compute_unit_price(priority_fee_lamports)
+
+            static_account_keys = list(original_jupiter_message.account_keys)
+            # For non-ALT, comprehensive_account_keys_list is just static_account_keys
+
+            if not static_account_keys: 
+                 logger.error("Static account key list is empty for non-ALT tx. Fallback.")
+                 message_to_sign_bytes = bytes(original_jupiter_message)
+                 signature_from_user = signer_keypair.sign_message(message_to_sign_bytes)
+                 signed_tx = VersionedTransaction.populate(original_jupiter_message, [signature_from_user])
+            else:
+                # --- Recalculate AccountMeta flags for the static_account_keys_list ---
+                num_static_accounts = len(static_account_keys)
+                num_static_signed = original_jupiter_message.header.num_required_signatures
+
+                is_signer_flags = ([True] * num_static_signed + 
+                                   [False] * (num_static_accounts - num_static_signed))
+
+                is_writable_flags = [False] * num_static_accounts
+                if num_static_accounts > 0: 
+                    is_writable_flags[0] = True # Payer
+
+                writable_static_signed_count = num_static_signed - original_jupiter_message.header.num_readonly_signed_accounts
+                for i in range(num_static_signed):
+                    if i < writable_static_signed_count: is_writable_flags[i] = True
+                
+                num_static_unsigned = num_static_accounts - num_static_signed
+                writable_static_unsigned_count = num_static_unsigned - original_jupiter_message.header.num_readonly_unsigned_accounts
+                for i in range(num_static_unsigned):
+                    actual_idx_in_static = num_static_signed + i
+                    if i < writable_static_unsigned_count: is_writable_flags[actual_idx_in_static] = True
+                
+                full_account_metas = [
+                    AccountMeta(pubkey, is_signer_flags[i], is_writable_flags[i])
+                    for i, pubkey in enumerate(static_account_keys) 
+                ]
+                # --- End of AccountMeta recalculation for static keys ---
+
+                decompiled_jupiter_instructions: List[Instruction] = []
+                error_in_decompilation = False
+                for compiled_ix in original_jupiter_message.instructions:
+                    try:
+                        program_id_pubkey = static_account_keys[compiled_ix.program_id_index]
+                        instruction_accounts_meta = [full_account_metas[acc_idx] for acc_idx in compiled_ix.accounts]
+                        
+                        decompiled_ix = Instruction(
+                            program_id=program_id_pubkey,
+                            accounts=instruction_accounts_meta,
+                            data=compiled_ix.data
+                        )
+                        decompiled_jupiter_instructions.append(decompiled_ix)
+                    except IndexError as e:
+                        logger.error(f"IndexError during NON-ALT decompilation: {e}. acc_keys_len={len(static_account_keys)}, compiled_ix={compiled_ix}", exc_info=True)
+                        error_in_decompilation = True
+                        break 
+                    except Exception as decomp_err:
+                        logger.error(f"Error during NON-ALT decompilation: {decomp_err}", exc_info=True)
+                        error_in_decompilation = True
+                        break
+                
+                if error_in_decompilation:
+                    logger.warning("Decompilation failed for NON-ALT tx, falling back to signing original Jupiter message.")
+                    message_to_sign_bytes = bytes(original_jupiter_message)
+                    signature_from_user = signer_keypair.sign_message(message_to_sign_bytes)
+                    signed_tx = VersionedTransaction.populate(original_jupiter_message, [signature_from_user])
+                else:
+                    all_instructions = [ix_set_compute_limit, ix_set_compute_price] + decompiled_jupiter_instructions
+                    reconstructed_message = MessageV0.try_compile(
+                        payer=static_account_keys[0], 
+                        instructions=all_instructions,
+                        address_lookup_tables=[], # Empty for non-ALT path
+                        recent_blockhash=original_jupiter_message.recent_blockhash
+                    )
+                    message_to_sign_bytes = bytes(reconstructed_message)
+                    signature_from_user = signer_keypair.sign_message(message_to_sign_bytes)
+                    signed_tx = VersionedTransaction.populate(reconstructed_message, [signature_from_user])
+
         await query.edit_message_text(text=f"🚀 Sending transaction for {input_token_symbol} swap...", reply_markup=None)
         serialized_signed_tx = bytes(signed_tx)
         opts = TxOpts(skip_preflight=True, preflight_commitment=Commitment("confirmed"))
@@ -626,7 +698,7 @@ async def handle_sell_execute_final_confirm(update, context):
             async_client=async_client,
             signature=actual_tx_signature,
             desired_commitment=desired_commitment_level,
-            last_valid_block_height=last_valid_block_height, # Use the LVBH associated with the SDK's tx or freshly fetched one
+            last_valid_block_height=last_valid_block_height, 
             logger_instance=logger, 
             polling_interval_secs=3,
             max_polling_duration_secs=max_polling_duration
@@ -706,7 +778,6 @@ async def handle_sell_execute_final_confirm(update, context):
         await async_client.close()
         clear_sell_session_data(context)
 
-
 async def handle_sell_execute_final_cancel(update, context):
     query = update.callback_query
     await query.answer()
@@ -714,7 +785,6 @@ async def handle_sell_execute_final_cancel(update, context):
     logger.info(f"User {query.from_user.id} cancelled final sell order.")
     await query.edit_message_text(text=text, reply_markup=get_sell_navigation_buttons())
     clear_sell_session_data(context)
-
 
 async def sell_button_callback(update, context):
     query = update.callback_query
@@ -741,4 +811,3 @@ async def sell_button_callback(update, context):
             await query.answer("Action not recognized.")
         except Exception as e:
             logger.debug(f"Query answer failed in sell_button_callback fallback: {e}")
-
